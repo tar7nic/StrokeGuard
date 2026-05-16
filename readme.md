@@ -54,7 +54,7 @@ An end-to-end clinical stroke risk prediction system built on 5,110 patient reco
 ## Project Structure
 
 ```
-clinicalrisk/
+StrokeGuard/
 ├── data/
 │   └── healthcare-dataset-stroke-data.csv
 ├── notebooks/
@@ -85,8 +85,8 @@ clinicalrisk/
 
 ```bash
 # 1. Clone and install
-git clone https://github.com/your-username/clinicalrisk.git
-cd clinicalrisk
+git clone https://github.com/your-username/StrokeGuard.git
+cd StrokeGuard
 pip install -r requirements.txt
 
 # 2. Add dataset
