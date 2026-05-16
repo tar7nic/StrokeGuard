@@ -11,8 +11,8 @@ import warnings
 warnings.filterwarnings("ignore")
 
 st.set_page_config(
-    page_title="ClinicalRisk — Stroke Prediction",
-    page_icon="🧠",
+    page_title="StrokeGuard — Stroke Prediction",
+    page_icon="🛡️",
     layout="wide",
     initial_sidebar_state="expanded"
 )
@@ -172,7 +172,7 @@ BASE_FEATURE_COLS = ["age", "hypertension", "heart_disease", "avg_glucose_level"
                      "gender", "ever_married", "work_type", "Residence_type", "smoking_status"]
 FE_COLS = list(pd.read_csv(f"{MODELS_DIR}/X_train_fe.csv").columns)
 
-st.sidebar.markdown("## 🧠 ClinicalRisk")
+st.sidebar.markdown("## 🛡️ StrokeGuard")
 st.sidebar.markdown("<div class='section-header'>Navigation</div>", unsafe_allow_html=True)
 page = st.sidebar.radio("", ["Risk Scorer", "Model Comparison", "Cohort Explorer", "Feature Importance"],
                          label_visibility="collapsed")
