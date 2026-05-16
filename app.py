@@ -209,8 +209,10 @@ if page == "Risk Scorer":
             "Residence_type": residence, "smoking_status": smoking
         }
 
-        df_raw = pd.DataFrame([patient_raw])
-        df_enc = encode_patient(patient_raw, encoders, BASE_FEATURE_COLS)
+        df_enc = pd.DataFrame([patient_raw])
+        for col in ["gender", "ever_married", "work_type", "Residence_type", "smoking_status"]:
+            df_enc[col] = encoders[col].transform(df_enc[col].astype(str))
+
         df_fe = build_patient_features(df_enc)
         df_fe = df_fe.reindex(columns=FE_COLS, fill_value=0)
 
@@ -218,9 +220,13 @@ if page == "Risk Scorer":
         threshold = meta["threshold"]
         prediction = int(prob >= threshold)
 
-        if prob < 0.30:
+        all_probs = pd.Series(pipeline.predict_proba(pd.read_csv(f"{MODELS_DIR}/X_test_fe.csv"))[:, 1])
+        low_cut = all_probs.quantile(0.40)
+        high_cut = all_probs.quantile(0.75)
+
+        if prob < low_cut:
             risk_label, badge_class, value_class = "Low Risk", "badge-low", "risk-low"
-        elif prob < 0.60:
+        elif prob < high_cut:
             risk_label, badge_class, value_class = "Medium Risk", "badge-medium", "risk-medium"
         else:
             risk_label, badge_class, value_class = "High Risk", "badge-high", "risk-high"
