@@ -1,0 +1,6 @@
+vascular_risk_score,age_group,glucose_category,total_patients,stroke_cases,stroke_rate_pct
+1,60+,Prediabetic,24,8,33.33
+3,60+,Diabetic,29,7,24.14
+2,60+,Normal,23,5,21.74
+2,60+,Diabetic,154,33,21.43
+1,60+,Diabetic,219,32,14.61

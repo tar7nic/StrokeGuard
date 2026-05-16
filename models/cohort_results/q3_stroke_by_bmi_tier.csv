@@ -1,0 +1,5 @@
+bmi_tier,total_patients,stroke_cases,stroke_rate_pct
+Underweight,337,1,0.3
+Normal,1263,36,2.85
+Overweight,1535,107,6.97
+Obese,1974,105,5.32

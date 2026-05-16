@@ -1,0 +1,5 @@
+age_group,total_patients,stroke_cases,stroke_rate_pct
+<18,856,2,0.23
+18-40,1313,6,0.46
+40-60,1564,60,3.84
+60+,1376,181,13.15
