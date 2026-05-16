@@ -1,477 +1,584 @@
-import streamlit as st
-import pandas as pd
-import numpy as np
-import joblib
 import os
-import plotly.graph_objects as go
-import plotly.express as px
-from plotly.subplots import make_subplots
-import shap
 import warnings
 warnings.filterwarnings("ignore")
 
-st.set_page_config(
-    page_title="StrokeGuard — Stroke Prediction",
-    page_icon="🛡️",
-    layout="wide",
-    initial_sidebar_state="expanded"
-)
+import numpy as np
+import pandas as pd
+import joblib
+import streamlit as st
+import plotly.graph_objects as go
+import matplotlib
+matplotlib.use("Agg")
+import matplotlib.pyplot as plt
+import shap
 
-st.markdown("""
-<style>
-@import url('https://fonts.googleapis.com/css2?family=DM+Sans:wght@300;400;500;600&family=DM+Mono:wght@400;500&display=swap');
+from src.features import build_features
+from src.preprocess import encode_categoricals
 
-html, body, [class*="css"] {
-    font-family: 'DM Sans', sans-serif;
-}
-.stApp {
-    background-color: #0f1117;
-    color: #e8eaf0;
-}
-section[data-testid="stSidebar"] {
-    background-color: #161b27;
-    border-right: 1px solid #1f2937;
-}
-.metric-card {
-    background: linear-gradient(135deg, #1a2035 0%, #1e2540 100%);
-    border: 1px solid #2a3350;
-    border-radius: 12px;
-    padding: 20px 24px;
-    margin-bottom: 12px;
-}
-.metric-value {
-    font-size: 2rem;
-    font-weight: 600;
-    font-family: 'DM Mono', monospace;
-    line-height: 1.1;
-}
-.metric-label {
-    font-size: 0.75rem;
-    text-transform: uppercase;
-    letter-spacing: 0.1em;
-    color: #6b7fa3;
-    margin-top: 4px;
-}
-.risk-low { color: #34d399; }
-.risk-medium { color: #fbbf24; }
-.risk-high { color: #f87171; }
-.risk-badge {
-    display: inline-block;
-    padding: 6px 16px;
-    border-radius: 20px;
-    font-weight: 600;
-    font-size: 0.9rem;
-    letter-spacing: 0.05em;
-}
-.badge-low { background: rgba(52,211,153,0.15); color: #34d399; border: 1px solid #34d399; }
-.badge-medium { background: rgba(251,191,36,0.15); color: #fbbf24; border: 1px solid #fbbf24; }
-.badge-high { background: rgba(248,113,113,0.15); color: #f87171; border: 1px solid #f87171; }
-.section-header {
-    font-size: 0.7rem;
-    text-transform: uppercase;
-    letter-spacing: 0.15em;
-    color: #4b5fa3;
-    margin-bottom: 16px;
-    padding-bottom: 8px;
-    border-bottom: 1px solid #1f2937;
-}
-h1, h2, h3 { color: #e8eaf0; }
-.stSelectbox label, .stSlider label, .stNumberInput label { color: #9aa3b8 !important; font-size: 0.85rem !important; }
-</style>
-""", unsafe_allow_html=True)
-
+# ─────────────────────────────────────────────
+# Constants
+# ─────────────────────────────────────────────
 MODELS_DIR = "models"
-COHORT_DIR = "models/cohort_results"
-SHAP_DIR = "models/shap_plots"
+MODEL_NAMES = ["logistic_regression", "decision_tree", "random_forest", "xgboost", "lightgbm"]
 
+ORDINAL_COLS = ["gender", "ever_married", "work_type", "Residence_type", "smoking_status"]
 
-@st.cache_resource
-def load_artifacts():
-    pipeline = joblib.load(f"{MODELS_DIR}/best_model.pkl")
+GENDER_OPTIONS       = ["Male", "Female"]
+MARRIED_OPTIONS      = ["Yes", "No"]
+WORK_OPTIONS         = ["Private", "Self-employed", "Govt_job", "children", "Never_worked"]
+RESIDENCE_OPTIONS    = ["Urban", "Rural"]
+SMOKING_OPTIONS      = ["never smoked", "formerly smoked", "smokes", "Unknown"]
+
+# ─────────────────────────────────────────────
+# Cached loaders — loaded ONCE per server start
+# ─────────────────────────────────────────────
+@st.cache_resource(show_spinner="Loading models…")
+def load_all_models():
+    models = {}
+    for name in MODEL_NAMES:
+        path = f"{MODELS_DIR}/{name}.pkl"
+        if os.path.exists(path):
+            models[name] = joblib.load(path)
+    return models
+
+@st.cache_resource(show_spinner="Loading encoders…")
+def load_encoders():
+    return joblib.load(f"{MODELS_DIR}/encoders.pkl")
+
+@st.cache_resource(show_spinner="Loading best model metadata…")
+def load_best_meta():
     meta = joblib.load(f"{MODELS_DIR}/best_model_meta.pkl")
-    encoders = joblib.load(f"{MODELS_DIR}/encoders.pkl")
-    shap_data = joblib.load(f"{MODELS_DIR}/shap_data.pkl")
-    comparison_df = pd.read_csv(f"{MODELS_DIR}/model_comparison.csv")
-    return pipeline, meta, encoders, shap_data, comparison_df
+    best_pipeline = joblib.load(f"{MODELS_DIR}/best_model.pkl")
+    return best_pipeline, meta  # meta = {"model_name": ..., "threshold": ...}
 
+@st.cache_resource(show_spinner="Loading test data…")
+def load_test_data():
+    X_test  = pd.read_csv(f"{MODELS_DIR}/X_test_fe.csv")
+    y_test  = pd.read_csv(f"{MODELS_DIR}/y_test.csv").squeeze()
+    X_train = pd.read_csv(f"{MODELS_DIR}/X_train_fe.csv")
+    return X_test, y_test, X_train
 
-@st.cache_data
-def load_cohort_data():
-    q1 = pd.read_csv(f"{COHORT_DIR}/q1_stroke_by_age_group.csv")
-    q2 = pd.read_csv(f"{COHORT_DIR}/q2_stroke_by_glucose.csv")
-    q3 = pd.read_csv(f"{COHORT_DIR}/q3_stroke_by_bmi_tier.csv")
-    q4 = pd.read_csv(f"{COHORT_DIR}/q4_stroke_by_hypertension.csv")
-    q5 = pd.read_csv(f"{COHORT_DIR}/q5_top_risk_cohorts.csv")
-    return q1, q2, q3, q4, q5
+@st.cache_data(show_spinner="Loading model comparison…")
+def load_comparison():
+    path = f"{MODELS_DIR}/model_comparison.csv"
+    if os.path.exists(path):
+        return pd.read_csv(path)
+    return None
 
+# ─────────────────────────────────────────────
+# Patient input → feature-engineered DataFrame
+# ─────────────────────────────────────────────
+def build_patient_df(inputs: dict, encoders: dict, feature_cols: list) -> pd.DataFrame:
+    """
+    Takes raw UI inputs, applies the SAME preprocessing & feature engineering
+    pipeline that was used during training. Returns a 1-row DataFrame with
+    exactly the columns the model was trained on, in the correct order.
+    """
+    df = pd.DataFrame([inputs])
 
-def get_classifier_and_transformed(pipeline, X: pd.DataFrame):
-    X_t = X.copy()
-    for name, step in pipeline.steps[:-1]:
-        if name == "smote":
-            continue
-        X_t = pd.DataFrame(step.transform(X_t), columns=X_t.columns)
-    return pipeline.named_steps["clf"], X_t
+    # Encode categoricals using the SAVED encoders (no re-fitting)
+    df, _ = encode_categoricals(df, encoders=encoders, fit=False)
 
+    # Feature engineering (pure deterministic transforms — no randomness)
+    df = build_features(df)
 
-def encode_patient(patient_dict: dict, encoders: dict, feature_cols: list) -> pd.DataFrame:
-    from sklearn.preprocessing import LabelEncoder
-    df = pd.DataFrame([patient_dict])
-    ordinal_cols = ["gender", "ever_married", "work_type", "Residence_type", "smoking_status"]
-    for col in ordinal_cols:
-        if col in df.columns and col in encoders:
-            le = encoders[col]
-            df[col] = le.transform(df[col].astype(str))
+    # Enforce exact column order from training
     df = df.reindex(columns=feature_cols, fill_value=0)
     return df
 
+# ─────────────────────────────────────────────
+# SHAP helpers — correct per model type
+# ─────────────────────────────────────────────
+def get_shap_values_for_patient(pipeline, patient_df: pd.DataFrame, X_train_bg: pd.DataFrame = None):
+    """
+    Returns (shap_vals_1d, feature_display_df, expected_value).
 
-def build_patient_features(df: pd.DataFrame) -> pd.DataFrame:
-    df = df.copy()
-    bmi = df["bmi"]
-    df["bmi_risk_tier"] = 1
-    df.loc[bmi < 18.5, "bmi_risk_tier"] = 0
-    df.loc[(bmi >= 25) & (bmi < 30), "bmi_risk_tier"] = 2
-    df.loc[bmi >= 30, "bmi_risk_tier"] = 3
+    - Tree models: TreeExplainer on pre-scaler data (original feature space).
+    - Linear models: LinearExplainer MUST have a proper background dataset
+      (the full training set scaled), otherwise SHAP values are near-zero garbage.
+    """
+    steps = dict(pipeline.steps)
+    clf   = steps["clf"]
+    model_type = type(clf).__name__
 
-    g = df["avg_glucose_level"]
-    df["glucose_category"] = 0
-    df.loc[(g >= 114) & (g < 140), "glucose_category"] = 1
-    df.loc[g >= 140, "glucose_category"] = 2
+    X_for_shap = patient_df.copy()
+    if "scaler" in steps:
+        scaler = steps["scaler"]
+        X_scaled = pd.DataFrame(
+            scaler.transform(X_for_shap),
+            columns=X_for_shap.columns
+        )
+    else:
+        X_scaled = X_for_shap.copy()
 
-    df["age_hypertension_interaction"] = df["age"] * df["hypertension"]
-    df["age_heart_disease_interaction"] = df["age"] * df["heart_disease"]
+    if model_type in ("XGBClassifier", "LGBMClassifier", "RandomForestClassifier",
+                      "DecisionTreeClassifier"):
+        explainer = shap.TreeExplainer(clf)
+        sv = explainer.shap_values(X_for_shap)
+        if isinstance(sv, list):
+            sv = sv[1]
+        shap_1d = sv[0]
+        ev = explainer.expected_value
+        if isinstance(ev, (list, np.ndarray)):
+            ev = float(ev[1])
+        display_df = X_for_shap   # original values shown to user
 
-    age = df["age"]
-    df["age_group"] = 0
-    df.loc[(age >= 18) & (age < 40), "age_group"] = 1
-    df.loc[(age >= 40) & (age < 60), "age_group"] = 2
-    df.loc[age >= 60, "age_group"] = 3
-
-    diabetic = (df["glucose_category"] == 2).astype(int)
-    df["vascular_risk_score"] = df["hypertension"] + df["heart_disease"] + diabetic
-    df["bmi_glucose_interaction"] = df["bmi"] * df["avg_glucose_level"]
-    df["senior_hypertensive"] = ((df["age"] > 60) & (df["hypertension"] == 1)).astype(int)
-    return df
-
-
-def plotly_dark_layout():
-    return dict(
-        paper_bgcolor="rgba(0,0,0,0)",
-        plot_bgcolor="rgba(0,0,0,0)",
-        font=dict(color="#9aa3b8", family="DM Sans"),
-        xaxis=dict(gridcolor="#1f2937", zerolinecolor="#1f2937"),
-        yaxis=dict(gridcolor="#1f2937", zerolinecolor="#1f2937"),
-    )
-
-
-pipeline, meta, encoders, shap_data, comparison_df = load_artifacts()
-q1, q2, q3, q4, q5 = load_cohort_data()
-
-BASE_FEATURE_COLS = ["age", "hypertension", "heart_disease", "avg_glucose_level", "bmi",
-                     "gender", "ever_married", "work_type", "Residence_type", "smoking_status"]
-FE_COLS = list(pd.read_csv(f"{MODELS_DIR}/X_train_fe.csv").columns)
-
-st.sidebar.markdown("## 🛡️ StrokeGuard")
-st.sidebar.markdown("<div class='section-header'>Navigation</div>", unsafe_allow_html=True)
-page = st.sidebar.radio("", ["Risk Scorer", "Model Comparison", "Cohort Explorer", "Feature Importance"],
-                         label_visibility="collapsed")
-st.sidebar.markdown("---")
-st.sidebar.markdown(f"<div class='section-header'>Model Active</div>", unsafe_allow_html=True)
-st.sidebar.markdown(f"`{meta['model_name'].replace('_', ' ').title()}`")
-st.sidebar.markdown(f"Threshold: `{meta['threshold']:.4f}`")
-
-
-if page == "Risk Scorer":
-    st.markdown("# Risk Scorer")
-    st.markdown("<div class='section-header'>Enter patient vitals to compute real-time stroke risk</div>", unsafe_allow_html=True)
-
-    col1, col2, col3 = st.columns(3)
-    with col1:
-        age = st.slider("Age", 1, 100, 55)
-        hypertension = st.selectbox("Hypertension", [0, 1], format_func=lambda x: "Yes" if x else "No")
-        heart_disease = st.selectbox("Heart Disease", [0, 1], format_func=lambda x: "Yes" if x else "No")
-    with col2:
-        avg_glucose_level = st.number_input("Avg Glucose Level", 50.0, 300.0, 120.0, step=0.5)
-        bmi = st.number_input("BMI", 10.0, 60.0, 28.0, step=0.1)
-        gender = st.selectbox("Gender", ["Male", "Female"])
-    with col3:
-        ever_married = st.selectbox("Ever Married", ["Yes", "No"])
-        work_type = st.selectbox("Work Type", ["Private", "Self-employed", "Govt_job", "children", "Never_worked"])
-        residence = st.selectbox("Residence Type", ["Urban", "Rural"])
-        smoking = st.selectbox("Smoking Status", ["never smoked", "formerly smoked", "smokes", "Unknown"])
-
-    if st.button("Compute Stroke Risk", type="primary", use_container_width=True):
-        patient_raw = {
-            "age": age, "hypertension": hypertension, "heart_disease": heart_disease,
-            "avg_glucose_level": avg_glucose_level, "bmi": bmi, "gender": gender,
-            "ever_married": ever_married, "work_type": work_type,
-            "Residence_type": residence, "smoking_status": smoking
-        }
-
-        df_enc = pd.DataFrame([patient_raw])
-        for col in ["gender", "ever_married", "work_type", "Residence_type", "smoking_status"]:
-            df_enc[col] = encoders[col].transform(df_enc[col].astype(str))
-
-        df_fe = build_patient_features(df_enc)
-        df_fe = df_fe.reindex(columns=FE_COLS, fill_value=0)
-
-        prob = pipeline.predict_proba(df_fe)[0][1]
-        threshold = meta["threshold"]
-        prediction = int(prob >= threshold)
-
-        all_probs = pd.Series(pipeline.predict_proba(pd.read_csv(f"{MODELS_DIR}/X_test_fe.csv"))[:, 1])
-        low_cut = all_probs.quantile(0.55)
-        high_cut = all_probs.quantile(0.85)
-
-        if prob < low_cut:
-            risk_label, badge_class, value_class = "Low Risk", "badge-low", "risk-low"
-        elif prob < high_cut:
-            risk_label, badge_class, value_class = "Medium Risk", "badge-medium", "risk-medium"
-        else:
-            risk_label, badge_class, value_class = "High Risk", "badge-high", "risk-high"
-
-        st.markdown("---")
-        r1, r2, r3 = st.columns(3)
-        with r1:
-            st.markdown(f"""
-            <div class='metric-card'>
-                <div class='metric-value {value_class}'>{prob*100:.1f}%</div>
-                <div class='metric-label'>Stroke Probability</div>
-                <div style='color:#6b7fa3; font-size:0.72rem; margin-top:6px;'>Relative to population distribution</div>
-            </div>""", unsafe_allow_html=True)
-        with r2:
-            st.markdown(f"""
-            <div class='metric-card'>
-                <div style='margin-top:8px'><span class='risk-badge {badge_class}'>{risk_label}</span></div>
-                <div class='metric-label' style='margin-top:12px'>Risk Classification</div>
-            </div>""", unsafe_allow_html=True)
-        with r3:
-            st.markdown(f"""
-            <div class='metric-card'>
-                <div class='metric-value' style='color:#6b7fa3'>{meta['threshold']:.2f}</div>
-                <div class='metric-label'>Decision Threshold</div>
-            </div>""", unsafe_allow_html=True)
-
-        gauge = go.Figure(go.Indicator(
-            mode="gauge+number",
-            value=prob * 100,
-            number={"suffix": "%", "font": {"size": 28, "color": "#e8eaf0"}},
-            gauge={
-                "axis": {"range": [0, 100], "tickcolor": "#6b7fa3"},
-                "bar": {"color": "#f87171" if prob >= 0.6 else "#fbbf24" if prob >= 0.3 else "#34d399"},
-                "steps": [
-                    {"range": [0, 30], "color": "rgba(52,211,153,0.1)"},
-                    {"range": [30, 60], "color": "rgba(251,191,36,0.1)"},
-                    {"range": [60, 100], "color": "rgba(248,113,113,0.1)"},
-                ],
-                "threshold": {"line": {"color": "#e8eaf0", "width": 2}, "value": threshold * 100},
-                "bgcolor": "rgba(0,0,0,0)",
-            }
-        ))
-        gauge.update_layout(height=250, margin=dict(t=20, b=10), **plotly_dark_layout())
-        st.plotly_chart(gauge, use_container_width=True)
-
-        try:
-            clf, X_t = get_classifier_and_transformed(pipeline, df_fe)
-            model_type = type(clf).__name__
-            if model_type in ("XGBClassifier", "LGBMClassifier", "RandomForestClassifier"):
-                explainer = shap.TreeExplainer(clf)
-                sv = explainer.shap_values(X_t)
-                if isinstance(sv, list):
-                    sv = sv[1]
-                ev = explainer.expected_value
-                if isinstance(ev, (list, np.ndarray)):
-                    ev = ev[1]
-            else:
-                explainer = shap.LinearExplainer(clf, X_t, feature_perturbation="interventional")
-                sv = explainer.shap_values(X_t)
-                ev = explainer.expected_value
-
-            patient_sv = sv[0]
-            feature_names = X_t.columns.tolist()
-            patient_vals = X_t.iloc[0].values
-            sorted_idx = np.argsort(np.abs(patient_sv))[::-1][:10]
-
-            top_f = [feature_names[i] for i in sorted_idx][::-1]
-            top_sv = patient_sv[sorted_idx][::-1]
-            top_v = patient_vals[sorted_idx][::-1]
-            colors = ["#f87171" if v > 0 else "#60a5fa" for v in top_sv]
-
-            wf = go.Figure(go.Bar(
-                x=top_sv, y=[f"{top_f[i]} = {top_v[i]:.2f}" for i in range(len(top_f))],
-                orientation="h", marker_color=colors,
-                text=[f"{v:+.3f}" for v in top_sv], textposition="outside"
-            ))
-            wf.update_layout(
-                title="SHAP Waterfall — This Patient",
-                height=380, margin=dict(l=10, r=60, t=40, b=10),
-                **plotly_dark_layout()
+    else:
+        # LinearExplainer REQUIRES a meaningful background distribution.
+        # Using a single row gives near-zero SHAP values. Use scaled training data.
+        if X_train_bg is not None and "scaler" in steps:
+            scaler = steps["scaler"]
+            bg_scaled = pd.DataFrame(
+                scaler.transform(X_train_bg),
+                columns=X_train_bg.columns
             )
-            st.plotly_chart(wf, use_container_width=True)
-        except Exception as e:
-            st.warning(f"SHAP waterfall unavailable: {e}")
+        else:
+            bg_scaled = X_scaled  # fallback (poor but won't crash)
 
+        explainer = shap.LinearExplainer(clf, bg_scaled, feature_perturbation="interventional")
+        sv = explainer.shap_values(X_scaled)
+        shap_1d = sv[0] if sv.ndim > 1 else sv
+        ev = float(explainer.expected_value)
+        display_df = X_for_shap   # show original (unscaled) values to user
 
-elif page == "Model Comparison":
-    st.markdown("# Model Comparison")
-    st.markdown("<div class='section-header'>Stratified 5-fold CV + held-out test set evaluation</div>", unsafe_allow_html=True)
+    return shap_1d, display_df, ev
 
-    display_cols = ["model", "cv_roc_auc_mean", "cv_roc_auc_std", "test_roc_auc", "test_recall", "test_f1", "test_precision"]
-    available = [c for c in display_cols if c in comparison_df.columns]
-    st.dataframe(
-        comparison_df[available].style.highlight_max(
-            subset=[c for c in ["cv_roc_auc_mean", "test_roc_auc", "test_recall", "test_f1"] if c in available],
-            color="#1e3a2f"
-        ).format({c: "{:.4f}" for c in available if c != "model"}),
-        use_container_width=True, height=220
+# ─────────────────────────────────────────────
+# Gauge chart — value and range both in [0, 1]
+# ─────────────────────────────────────────────
+def make_gauge(probability: float, threshold: float) -> go.Figure:
+    """
+    probability : float in [0, 1]
+    threshold   : float in [0, 1]  ← the trained optimal threshold
+    
+    The gauge axis is [0, 1]. We display percentages only in tick labels.
+    This is the fix for the needle rendering at the wrong position.
+    """
+    pct = probability * 100
+
+    if probability < threshold * 0.6:
+        color = "#2ecc71"
+        label = "Low Risk"
+    elif probability < threshold:
+        color = "#f39c12"
+        label = "Moderate Risk"
+    elif probability < threshold * 1.5:
+        color = "#e74c3c"
+        label = "High Risk"
+    else:
+        color = "#8e1c1c"
+        label = "Very High Risk"
+
+    fig = go.Figure(go.Indicator(
+        mode="gauge+number+delta",
+        value=probability,           # ← in [0,1], same unit as axis range
+        number={
+            "valueformat": ".1%",    # displayed as percentage text
+            "font": {"size": 36, "color": color}
+        },
+        delta={
+            "reference": threshold,
+            "valueformat": ".1%",
+            "increasing": {"color": "#e74c3c"},
+            "decreasing": {"color": "#2ecc71"},
+        },
+        gauge={
+            "axis": {
+                "range": [0, 1],     # ← same unit as value
+                "tickformat": ".0%",
+                "tickfont": {"size": 11},
+                "nticks": 6,
+            },
+            "bar": {"color": color, "thickness": 0.3},
+            "bgcolor": "white",
+            "borderwidth": 2,
+            "bordercolor": "#cccccc",
+            "steps": [
+                {"range": [0,                threshold * 0.6], "color": "#d5f5e3"},
+                {"range": [threshold * 0.6,  threshold],       "color": "#fdebd0"},
+                {"range": [threshold,        threshold * 1.5], "color": "#fadbd8"},
+                {"range": [threshold * 1.5,  1.0],             "color": "rgba(192,57,43,0.13)"},
+            ],
+            "threshold": {
+                "line": {"color": "#2c3e50", "width": 3},
+                "thickness": 0.75,
+                "value": threshold,   # ← in [0,1]
+            },
+        },
+        title={"text": f"<b>Stroke Probability</b><br><span style='font-size:13px;color:{color}'>{label}</span>",
+               "font": {"size": 16}},
+        domain={"x": [0, 1], "y": [0, 1]},
+    ))
+    fig.update_layout(
+        height=320,
+        margin=dict(l=30, r=30, t=60, b=10),
+        paper_bgcolor="rgba(0,0,0,0)",
+        font={"family": "Georgia, serif"},
     )
+    return fig
 
-    st.markdown("---")
+# ─────────────────────────────────────────────
+# SHAP bar chart via matplotlib (no Plotly bugs)
+# ─────────────────────────────────────────────
+def make_shap_bar(shap_vals: np.ndarray, feature_names: list, feature_values: np.ndarray,
+                  top_n: int = 10):
+    idx = np.argsort(np.abs(shap_vals))[::-1][:top_n]
+    top_names  = [feature_names[i] for i in idx]
+    top_shap   = shap_vals[idx]
+    top_vals   = feature_values[idx]
 
+    colors = ["#c0392b" if v > 0 else "#2980b9" for v in top_shap]
+    y_pos  = range(len(top_names))
+    labels = [f"{n}  [{v:.2f}]" for n, v in zip(top_names[::-1], top_vals[::-1])]
+
+    fig, ax = plt.subplots(figsize=(9, 5))
+    ax.barh(list(y_pos), top_shap[::-1], color=colors[::-1], edgecolor="none", height=0.6)
+    ax.set_yticks(list(y_pos))
+    ax.set_yticklabels(labels, fontsize=9)
+    ax.axvline(0, color="#2c3e50", linewidth=1.2)
+    ax.set_xlabel("SHAP value  (↑ increases risk,  ↓ decreases risk)", fontsize=10)
+    ax.set_title("Feature Contributions to This Prediction", fontsize=12, fontweight="bold", pad=12)
+    ax.spines[["top", "right"]].set_visible(False)
+    plt.tight_layout()
+    return fig
+
+# ─────────────────────────────────────────────
+# ROC / PR curves (reuse evaluate.py logic inline)
+# ─────────────────────────────────────────────
+def make_roc_figure(models: dict, X_test, y_test):
     from sklearn.metrics import roc_curve, roc_auc_score
-    X_test_fe = pd.read_csv(f"{MODELS_DIR}/X_test_fe.csv")
-    y_test = pd.read_csv(f"{MODELS_DIR}/y_test.csv").squeeze()
-
-    model_names = ["logistic_regression", "decision_tree", "random_forest", "xgboost", "lightgbm"]
-    colors_roc = ["#60a5fa", "#a78bfa", "#34d399", "#f87171", "#fbbf24"]
-
-    fig_roc = go.Figure()
-    fig_roc.add_trace(go.Scatter(x=[0, 1], y=[0, 1], mode="lines",
-                                  line=dict(dash="dash", color="#374151"), name="Random"))
-    for mname, color in zip(model_names, colors_roc):
-        path = f"{MODELS_DIR}/{mname}.pkl"
-        if not os.path.exists(path):
-            continue
-        m = joblib.load(path)
-        y_prob = m.predict_proba(X_test_fe)[:, 1]
+    colors = ["#1f77b4", "#ff7f0e", "#2ca02c", "#d62728", "#9467bd"]
+    fig = go.Figure()
+    for (name, model), color in zip(models.items(), colors):
+        y_prob = model.predict_proba(X_test)[:, 1]
         fpr, tpr, _ = roc_curve(y_test, y_prob)
         auc = roc_auc_score(y_test, y_prob)
-        fig_roc.add_trace(go.Scatter(
-            x=fpr, y=tpr, mode="lines", name=f"{mname.replace('_',' ').title()} (AUC={auc:.4f})",
+        fig.add_trace(go.Scatter(
+            x=fpr, y=tpr, mode="lines",
+            name=f"{name.replace('_', ' ').title()} (AUC={auc:.3f})",
             line=dict(color=color, width=2)
         ))
-
-    fig_roc.update_layout(
+    fig.add_trace(go.Scatter(x=[0,1], y=[0,1], mode="lines",
+                             line=dict(color="grey", dash="dash"), name="Random", showlegend=True))
+    fig.update_layout(
         title="ROC Curves — All Models",
         xaxis_title="False Positive Rate",
         yaxis_title="True Positive Rate",
-        height=460, legend=dict(x=0.55, y=0.1),
-        **plotly_dark_layout()
+        legend=dict(x=0.55, y=0.05),
+        height=430,
+        template="plotly_white",
     )
-    st.plotly_chart(fig_roc, use_container_width=True)
+    return fig
 
-    c1, c2 = st.columns(2)
-    with c1:
-        fig_auc = go.Figure(go.Bar(
-            x=comparison_df["model"].str.replace("_", " ").str.title(),
-            y=comparison_df["test_roc_auc"],
-            marker_color=colors_roc[:len(comparison_df)],
-            text=comparison_df["test_roc_auc"].round(4), textposition="outside"
+def make_pr_figure(models: dict, X_test, y_test):
+    from sklearn.metrics import precision_recall_curve, average_precision_score
+    colors = ["#1f77b4", "#ff7f0e", "#2ca02c", "#d62728", "#9467bd"]
+    fig = go.Figure()
+    for (name, model), color in zip(models.items(), colors):
+        y_prob = model.predict_proba(X_test)[:, 1]
+        prec, rec, _ = precision_recall_curve(y_test, y_prob)
+        ap = average_precision_score(y_test, y_prob)
+        fig.add_trace(go.Scatter(
+            x=rec, y=prec, mode="lines",
+            name=f"{name.replace('_', ' ').title()} (AP={ap:.3f})",
+            line=dict(color=color, width=2)
         ))
-        fig_auc.update_layout(title="Test ROC-AUC", height=320, **plotly_dark_layout())
-        st.plotly_chart(fig_auc, use_container_width=True)
-    with c2:
-        fig_rec = go.Figure(go.Bar(
-            x=comparison_df["model"].str.replace("_", " ").str.title(),
-            y=comparison_df["test_recall"],
-            marker_color=colors_roc[:len(comparison_df)],
-            text=comparison_df["test_recall"].round(4), textposition="outside"
-        ))
-        fig_rec.update_layout(title="Test Recall (Stroke Class)", height=320, **plotly_dark_layout())
-        st.plotly_chart(fig_rec, use_container_width=True)
-
-
-elif page == "Cohort Explorer":
-    st.markdown("# Cohort Explorer")
-    st.markdown("<div class='section-header'>SQL cohort analysis — stroke prevalence across clinical segments</div>", unsafe_allow_html=True)
-
-    def cohort_bar(df, x_col, y_col, title, color="#60a5fa"):
-        fig = go.Figure(go.Bar(
-            x=df[x_col], y=df[y_col],
-            marker_color=color, text=df[y_col].round(2).astype(str) + "%",
-            textposition="outside"
-        ))
-        fig.update_layout(title=title, yaxis_title="Stroke Rate (%)", height=320, **plotly_dark_layout())
-        return fig
-
-    c1, c2 = st.columns(2)
-    with c1:
-        st.plotly_chart(cohort_bar(q1, "age_group", "stroke_rate_pct",
-                                    "Stroke Rate by Age Group", "#60a5fa"), use_container_width=True)
-    with c2:
-        st.plotly_chart(cohort_bar(q2, "glucose_category", "stroke_rate_pct",
-                                    "Stroke Rate by Glucose Category", "#f87171"), use_container_width=True)
-
-    c3, c4 = st.columns(2)
-    with c3:
-        st.plotly_chart(cohort_bar(q3, "bmi_tier", "stroke_rate_pct",
-                                    "Stroke Rate by BMI Tier", "#34d399"), use_container_width=True)
-    with c4:
-        st.plotly_chart(cohort_bar(q4, "hypertension_status", "stroke_rate_pct",
-                                    "Stroke Rate by Hypertension Status", "#fbbf24"), use_container_width=True)
-
-    st.markdown("### Top 5 Highest-Risk Cohorts")
-    st.dataframe(q5.style.background_gradient(subset=["stroke_rate_pct"], cmap="Reds"),
-                 use_container_width=True)
-
-
-elif page == "Feature Importance":
-    st.markdown("# Feature Importance")
-    st.markdown("<div class='section-header'>Global SHAP analysis — top 10 clinical risk drivers</div>", unsafe_allow_html=True)
-
-    sv = shap_data["shap_values"]
-    feature_names = shap_data["feature_names"]
-    mean_abs = np.abs(sv).mean(axis=0)
-    top_idx = np.argsort(mean_abs)[::-1][:10]
-    top_features = [feature_names[i] for i in top_idx]
-    top_shap = mean_abs[top_idx]
-
-    fig_imp = go.Figure(go.Bar(
-        x=top_shap[::-1],
-        y=top_features[::-1],
-        orientation="h",
-        marker=dict(
-            color=top_shap[::-1],
-            colorscale=[[0, "#1e3a5f"], [0.5, "#3b82f6"], [1, "#f87171"]],
-            showscale=False
-        ),
-        text=[f"{v:.4f}" for v in top_shap[::-1]],
-        textposition="outside"
-    ))
-    fig_imp.update_layout(
-        title="Mean |SHAP Value| — Top 10 Features",
-        xaxis_title="Mean Absolute SHAP Value",
-        height=420, margin=dict(l=10, r=80, t=40, b=10),
-        **plotly_dark_layout()
+    fig.update_layout(
+        title="Precision-Recall Curves — All Models",
+        xaxis_title="Recall",
+        yaxis_title="Precision",
+        height=430,
+        template="plotly_white",
     )
-    st.plotly_chart(fig_imp, use_container_width=True)
+    return fig
 
-    st.markdown("### Clinical Interpretation")
-    interpretations = {
-        "age": "Older patients carry exponentially higher stroke risk — the single strongest predictor.",
-        "age_squared": "Non-linear age effect: risk accelerates after ~60 years.",
-        "avg_glucose_level": "Elevated glucose indicates metabolic stress and vascular damage.",
-        "glucose_squared": "Quadratic glucose term captures extreme hyperglycemia risk.",
-        "age_hypertension_interaction": "Hypertension compounds with age — elderly hypertensive patients are highest risk.",
-        "age_heart_disease_interaction": "Heart disease becomes markedly more dangerous with advancing age.",
-        "bmi_glucose_interaction": "Metabolic syndrome proxy: high BMI + high glucose together indicate vascular risk.",
-        "vascular_risk_score": "Composite of hypertension, heart disease, and diabetes — summarises overall vascular burden.",
-        "senior_hypertensive": "Binary flag for the highest-risk demographic: over-60 with hypertension.",
-        "hypertension": "Standalone hypertension directly elevates stroke probability.",
-        "heart_disease": "Pre-existing cardiac conditions significantly increase stroke incidence.",
-        "bmi_risk_tier": "Obesity tier correlates with stroke, though weaker than metabolic markers.",
-        "glucose_category": "Diabetic-range glucose carries 2-3× higher stroke rate vs normal.",
-        "age_group": "Ordinal age bracket — confirms stroke is concentrated in 60+ cohort.",
-        "bmi": "BMI as continuous variable; effect partially captured by bmi_risk_tier.",
-        "senior_hypertensive": "Flags elderly hypertensives — a high-priority clinical screening target.",
+# ─────────────────────────────────────────────
+# Metrics summary table
+# ─────────────────────────────────────────────
+def compute_all_metrics(models: dict, X_test, y_test, threshold_map: dict) -> pd.DataFrame:
+    from sklearn.metrics import (roc_auc_score, f1_score, recall_score,
+                                 precision_score, average_precision_score)
+    rows = []
+    for name, model in models.items():
+        thr   = threshold_map.get(name, 0.5)
+        yp    = model.predict_proba(X_test)[:, 1]
+        ypred = (yp >= thr).astype(int)
+        rows.append({
+            "Model":      name.replace("_", " ").title(),
+            "Threshold":  f"{thr:.3f}",
+            "ROC-AUC":    round(roc_auc_score(y_test, yp), 4),
+            "Avg Prec":   round(average_precision_score(y_test, yp), 4),
+            "F1":         round(f1_score(y_test, ypred, zero_division=0), 4),
+            "Recall":     round(recall_score(y_test, ypred, zero_division=0), 4),
+            "Precision":  round(precision_score(y_test, ypred, zero_division=0), 4),
+        })
+    return pd.DataFrame(rows)
+
+# ─────────────────────────────────────────────
+# PAGE: Risk Evaluation
+# ─────────────────────────────────────────────
+def page_risk_evaluation(best_pipeline, meta, encoders, feature_cols, all_models: dict = None, X_train: pd.DataFrame = None):
+    st.title("🩺 Patient Risk Evaluation")
+    st.markdown(
+        "Enter patient details below. The prediction uses the **best trained model** "
+        f"(`{meta['model_name'].replace('_', ' ').title()}`) with its **optimal classification "
+        f"threshold of {meta['threshold']:.3f}** derived from the precision-recall curve."
+    )
+    threshold = float(meta["threshold"])
+
+    # ── Input form ──────────────────────────────────────────────────────────
+    with st.form("patient_form"):
+        col1, col2, col3 = st.columns(3)
+
+        with col1:
+            st.subheader("Demographics")
+            age    = st.slider("Age", 1, 100, 55)
+            gender = st.selectbox("Gender", GENDER_OPTIONS)
+            ever_married   = st.selectbox("Ever Married", MARRIED_OPTIONS)
+            residence_type = st.selectbox("Residence Type", RESIDENCE_OPTIONS)
+
+        with col2:
+            st.subheader("Medical History")
+            hypertension  = st.checkbox("Hypertension", value=False)
+            heart_disease = st.checkbox("Heart Disease", value=False)
+            avg_glucose   = st.number_input("Avg Glucose Level (mg/dL)", 50.0, 300.0, 100.0, step=1.0)
+            bmi           = st.number_input("BMI", 10.0, 60.0, 25.0, step=0.1)
+
+        with col3:
+            st.subheader("Lifestyle")
+            work_type      = st.selectbox("Work Type", WORK_OPTIONS)
+            smoking_status = st.selectbox("Smoking Status", SMOKING_OPTIONS)
+
+        submitted = st.form_submit_button("🔍 Predict Stroke Risk", use_container_width=True)
+
+    if not submitted:
+        st.info("Fill in the patient details and click **Predict** to see results.")
+        return
+
+    # ── Build input ──────────────────────────────────────────────────────────
+    raw_inputs = {
+        "gender":          gender,
+        "age":             float(age),
+        "hypertension":    int(hypertension),
+        "heart_disease":   int(heart_disease),
+        "ever_married":    ever_married,
+        "work_type":       work_type,
+        "Residence_type":  residence_type,
+        "avg_glucose_level": float(avg_glucose),
+        "bmi":             float(bmi),
+        "smoking_status":  smoking_status,
     }
 
-    for i, feat in enumerate(top_features):
-        interp = interpretations.get(feat, "Contributes to stroke risk prediction — see SHAP beeswarm for directionality.")
-        st.markdown(f"""
-        <div class='metric-card' style='padding:14px 20px; margin-bottom:8px;'>
-            <span style='font-family:DM Mono,monospace; color:#60a5fa; font-size:0.85rem;'>#{i+1} {feat}</span>
-            <span style='color:#6b7fa3; font-size:0.75rem; margin-left:12px;'>SHAP={top_shap[i]:.4f}</span>
-            <div style='color:#c4cde0; font-size:0.88rem; margin-top:6px;'>{interp}</div>
-        </div>""", unsafe_allow_html=True)
+    patient_df = build_patient_df(raw_inputs, encoders, feature_cols)
+
+    # ── Predict — call pipeline directly (deterministic) ────────────────────
+    # predict_proba on the full pipeline handles scaler internally.
+    # SMOTE step is skipped at inference automatically by ImbPipeline.
+    probability = float(best_pipeline.predict_proba(patient_df)[0, 1])
+    prediction  = int(probability >= threshold)   # ← same threshold used everywhere
+
+    # ── Risk label derived from threshold, not hardcoded numbers ────────────
+    if probability < threshold * 0.6:
+        risk_label = "🟢 Low Risk"
+        risk_color = "#2ecc71"
+    elif probability < threshold:
+        risk_label = "🟡 Moderate Risk"
+        risk_color = "#f39c12"
+    elif probability < threshold * 1.5:
+        risk_label = "🔴 High Risk"
+        risk_color = "#e74c3c"
+    else:
+        risk_label = "🚨 Very High Risk"
+        risk_color = "#8e1c1c"
+
+    # ── Display ──────────────────────────────────────────────────────────────
+    st.markdown("---")
+    g_col, m_col = st.columns([1.4, 1])
+
+    with g_col:
+        st.plotly_chart(make_gauge(probability, threshold), use_container_width=True)
+
+    with m_col:
+        st.markdown(f"### {risk_label}")
+        st.markdown(f"**Stroke Probability:** `{probability:.1%}`")
+        st.markdown(f"**Classification:** `{'Stroke' if prediction == 1 else 'No Stroke'}`")
+        st.markdown(f"**Decision Threshold:** `{threshold:.3f}`")
+        st.markdown(f"**Model:** `{meta['model_name'].replace('_', ' ').title()}`")
+        st.markdown("---")
+        if prediction == 1:
+            st.error("⚠️ Elevated stroke risk detected. Clinical review recommended.")
+        else:
+            st.success("✅ Risk is below the clinical threshold.")
+
+
+    # ── All-model probability comparison ─────────────────────────────────────
+    if all_models:
+        st.markdown("### 📊 All Model Probabilities")
+        st.caption(
+            "Logistic Regression with SMOTE/class-weight can produce compressed probabilities — "
+            "tree-based models (XGBoost, LightGBM, Random Forest) are generally better calibrated "
+            "and more reliable for high-risk patients."
+        )
+        mcols = st.columns(len(all_models))
+        model_display_names = {
+            "logistic_regression": "Logistic Reg",
+            "decision_tree": "Decision Tree",
+            "random_forest": "Random Forest",
+            "xgboost": "XGBoost",
+            "lightgbm": "LightGBM",
+        }
+        for col_ui, (mname, mpipeline) in zip(mcols, all_models.items()):
+            mp = float(mpipeline.predict_proba(patient_df)[0, 1])
+            is_best = (mname == meta["model_name"])
+            mp_thr  = float(meta["threshold"]) if is_best else 0.5
+            mp_pred = "Stroke" if mp >= mp_thr else "No Stroke"
+            clr     = "#e74c3c" if mp_pred == "Stroke" else "#2ecc71"
+            label   = model_display_names.get(mname, mname)
+            star    = "⭐ Best" if is_best else label
+            col_ui.markdown(
+                f"<div style='text-align:center;padding:10px 4px;border:1px solid #444;"
+                f"border-radius:8px;background:#1a1a2e'>"
+                f"<div style='font-size:11px;color:#aaa;margin-bottom:4px'>{star}</div>"
+                f"<div style='font-size:22px;font-weight:700;color:{clr}'>{mp:.1%}</div>"
+                f"<div style='font-size:11px;color:{clr}'>{mp_pred}</div>"
+                f"</div>",
+                unsafe_allow_html=True
+            )
+        st.markdown("---")
+
+    # ── SHAP Explanation ─────────────────────────────────────────────────────
+    st.markdown("### 🔬 SHAP Feature Explanation")
+    st.caption(
+        "Each bar shows how much a feature pushed the prediction **toward** (red, +) "
+        "or **away from** (blue, −) a stroke classification. Feature values in brackets."
+    )
+    try:
+        shap_vals, display_df, base_val = get_shap_values_for_patient(best_pipeline, patient_df, X_train_bg=X_train)
+        feat_names = list(patient_df.columns)
+        feat_vals  = display_df.iloc[0].values
+
+        fig_shap = make_shap_bar(shap_vals, feat_names, feat_vals, top_n=10)
+        st.pyplot(fig_shap, use_container_width=True)
+        plt.close(fig_shap)
+
+        st.caption(f"SHAP base value (model prior): `{base_val:.4f}` | "
+                   f"Sum of SHAP values: `{shap_vals.sum():.4f}` | "
+                   f"Approx model output (log-odds/score): `{base_val + shap_vals.sum():.4f}`")
+    except Exception as e:
+        st.warning(f"SHAP explanation unavailable: {e}")
+
+    # ── Feature summary table ────────────────────────────────────────────────
+    with st.expander("📋 Processed Feature Values Sent to Model"):
+        st.dataframe(patient_df.T.rename(columns={0: "Value"}), use_container_width=True)
+
+# ─────────────────────────────────────────────
+# PAGE: Performance Metrics
+# ─────────────────────────────────────────────
+def page_performance(models: dict, best_meta: dict, X_test, y_test, X_train=None):
+    st.title("📊 Model Performance")
+
+    best_name = best_meta["model_name"]
+    opt_thr   = float(best_meta["threshold"])
+
+    # Threshold map: optimal threshold for best model, 0.5 for others
+    threshold_map = {n: 0.5 for n in models}
+    threshold_map[best_name] = opt_thr
+
+    metrics_df = compute_all_metrics(models, X_test, y_test, threshold_map)
+
+    st.subheader("Summary Table")
+    st.dataframe(
+        metrics_df.style.highlight_max(subset=["ROC-AUC", "Recall", "F1"], color="#d5f5e3")
+                        .highlight_min(subset=["ROC-AUC", "Recall", "F1"], color="#fadbd8"),
+        use_container_width=True, hide_index=True
+    )
+
+    # Target checkboxes
+    best_auc    = metrics_df["ROC-AUC"].max()
+    best_recall = metrics_df["Recall"].max()
+    col1, col2 = st.columns(2)
+    col1.metric("Best ROC-AUC", f"{best_auc:.4f}",
+                delta="✓ Target Met" if best_auc >= 0.80 else "✗ Target Not Met")
+    col2.metric("Best Recall", f"{best_recall:.4f}",
+                delta="✓ Target Met" if best_recall >= 0.70 else "✗ Target Not Met")
+
+    st.markdown("---")
+    tab1, tab2 = st.tabs(["ROC Curves", "Precision-Recall Curves"])
+    with tab1:
+        st.plotly_chart(make_roc_figure(models, X_test, y_test), use_container_width=True)
+    with tab2:
+        st.plotly_chart(make_pr_figure(models, X_test, y_test), use_container_width=True)
+
+    # Comparison CSV if it exists
+    comp = load_comparison()
+    if comp is not None:
+        with st.expander("📄 Full Training CV + Test Comparison"):
+            st.dataframe(comp, use_container_width=True, hide_index=True)
+
+
+# ─────────────────────────────────────────────
+# Main app entry point
+# ─────────────────────────────────────────────
+def main():
+    st.set_page_config(
+        page_title="StrokeGuard — Stroke Prediction",
+        page_icon="🫀",
+        layout="wide",
+        initial_sidebar_state="expanded",
+    )
+
+    # ── Global style ─────────────────────────────────────────────────────────
+    st.markdown("""
+    <style>
+        @import url('https://fonts.googleapis.com/css2?family=Lora:wght@400;600;700&family=Source+Sans+3:wght@300;400;600&display=swap');
+        html, body, [class*="css"]  { font-family: 'Source Sans 3', sans-serif; }
+        h1, h2, h3 { font-family: 'Lora', serif; }
+        .stButton>button {
+            background: #1a3a5c; color: white; border-radius: 6px;
+            font-weight: 600; border: none; padding: 0.6rem 1.2rem;
+        }
+        .stButton>button:hover { background: #254e7a; }
+        .block-container { padding-top: 1.5rem; }
+    </style>
+    """, unsafe_allow_html=True)
+
+    # ── Load resources ────────────────────────────────────────────────────────
+    try:
+        models        = load_all_models()
+        encoders      = load_encoders()
+        best_pipeline, meta = load_best_meta()
+        X_test, y_test, X_train = load_test_data()
+    except FileNotFoundError as e:
+        st.error(f"Required model files not found: {e}\n\nRun `preprocess.py → features.py → train.py` first.")
+        st.stop()
+
+    # Feature columns come from the saved test CSV (ground truth column order)
+    feature_cols = list(X_test.columns)
+
+    # ── Sidebar navigation ────────────────────────────────────────────────────
+    st.sidebar.image("https://img.icons8.com/color/96/heart-with-pulse.png", width=64)
+    st.sidebar.title("StrokeGuard")
+    st.sidebar.caption("Stroke Risk Prediction System")
+    st.sidebar.markdown("---")
+
+    page = st.sidebar.radio(
+        "Navigate",
+        ["🩺 Risk Evaluation", "📊 Performance Metrics"],
+        label_visibility="collapsed"
+    )
+
+    st.sidebar.markdown("---")
+    st.sidebar.markdown(
+        f"**Active Model:** {meta['model_name'].replace('_', ' ').title()}\n\n"
+        f"**Threshold:** `{float(meta['threshold']):.4f}`"
+    )
+
+    # ── Route ─────────────────────────────────────────────────────────────────
+    if page == "🩺 Risk Evaluation":
+        page_risk_evaluation(best_pipeline, meta, encoders, feature_cols, models, X_train)
+    else:
+        page_performance(models, meta, X_test, y_test, X_train)
+
+
+if __name__ == "__main__":
+    main()
