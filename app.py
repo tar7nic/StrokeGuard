@@ -221,8 +221,8 @@ if page == "Risk Scorer":
         prediction = int(prob >= threshold)
 
         all_probs = pd.Series(pipeline.predict_proba(pd.read_csv(f"{MODELS_DIR}/X_test_fe.csv"))[:, 1])
-        low_cut = all_probs.quantile(0.40)
-        high_cut = all_probs.quantile(0.75)
+        low_cut = all_probs.quantile(0.55)
+        high_cut = all_probs.quantile(0.85)
 
         if prob < low_cut:
             risk_label, badge_class, value_class = "Low Risk", "badge-low", "risk-low"
@@ -238,6 +238,7 @@ if page == "Risk Scorer":
             <div class='metric-card'>
                 <div class='metric-value {value_class}'>{prob*100:.1f}%</div>
                 <div class='metric-label'>Stroke Probability</div>
+                <div style='color:#6b7fa3; font-size:0.72rem; margin-top:6px;'>Relative to population distribution</div>
             </div>""", unsafe_allow_html=True)
         with r2:
             st.markdown(f"""
